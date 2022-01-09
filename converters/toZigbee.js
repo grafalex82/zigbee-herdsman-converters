@@ -1915,6 +1915,8 @@ const converters = {
                     }
                 }
             }
+
+            return {state: {hue_power_on_behavior: value}};
         },
     },
     hue_power_on_error: {
@@ -2076,7 +2078,7 @@ const converters = {
             await entity.read('aqaraOpple', [0x0000], manufacturerOptions.xiaomi);
         },
     },
-    RTCGQ13LM_detection_interval: {
+    aqara_detection_interval: {
         key: ['detection_interval'],
         convertSet: async (entity, key, value, meta) => {
             value *= 1;
@@ -5027,6 +5029,28 @@ const converters = {
             }
         },
     },
+    ts0201_temperature_humidity_alarm: {
+        key: ['alarm_humidity_max', 'alarm_humidity_min', 'alarm_temperature_max', 'alarm_temperature_min'],
+        convertSet: async (entity, key, value, meta) => {
+            switch (key) {
+            case 'alarm_temperature_max':
+            case 'alarm_temperature_min':
+            case 'alarm_humidity_max':
+            case 'alarm_humidity_min': {
+                // await entity.write('manuSpecificTuya_2', {[key]: value});
+                // instead write as custom attribute to override incorrect herdsman dataType from uint16 to int16
+                // https://github.com/Koenkk/zigbee-herdsman/blob/v0.13.191/src/zcl/definition/cluster.ts#L4235
+                const keyToAttributeLookup = {'alarm_temperature_max': 0xD00A, 'alarm_temperature_min': 0xD00B,
+                    'alarm_humidity_max': 0xD00D, 'alarm_humidity_min': 0xD00E};
+                const payload = {[keyToAttributeLookup[key]]: {value: value, type: 0x29}};
+                await entity.write('manuSpecificTuya_2', payload);
+                break;
+            }
+            default: // Unknown key
+                meta.logger.warn(`Unhandled key ${key}`);
+            }
+        },
+    },
     heiman_ir_remote: {
         key: ['send_key', 'create', 'learn', 'delete', 'get_list'],
         convertSet: async (entity, key, value, meta) => {
@@ -5064,7 +5088,7 @@ const converters = {
         key: ['scene_store'],
         convertSet: async (entity, key, value, meta) => {
             const isGroup = entity.constructor.name === 'Group';
-            const groupid = isGroup ? entity.groupID : 0;
+            const groupid = isGroup ? entity.groupID : value.hasOwnProperty('group_id') ? value.group_id : 0;
             let sceneid = value;
             let scenename = null;
             if (typeof value === 'object') {
@@ -5164,7 +5188,7 @@ const converters = {
             }
 
             const isGroup = entity.constructor.name === 'Group';
-            const groupid = isGroup ? entity.groupID : 0;
+            const groupid = isGroup ? entity.groupID : value.hasOwnProperty('group_id') ? value.group_id : 0;
             const sceneid = value.ID;
             const scenename = value.name;
             const transtime = value.hasOwnProperty('transition') ? value.transition : 0;
@@ -5407,6 +5431,35 @@ const converters = {
         convertSet: async (entity, key, value, meta) => {
             if (value < 0) value = 0xFFFFFFFF + value + 1;
             await tuya.sendDataPointValue(entity, tuya.dataPoints.saswellTempCalibration, value);
+        },
+    },
+    evanell_thermostat_current_heating_setpoint: {
+        key: ['current_heating_setpoint'],
+        convertSet: async (entity, key, value, meta) => {
+            const temp = Math.round(value * 10);
+            await tuya.sendDataPointValue(entity, tuya.dataPoints.evanellHeatingSetpoint, temp);
+        },
+    },
+    evanell_thermostat_system_mode: {
+        key: ['system_mode'],
+        convertSet: async (entity, key, value, meta) => {
+            switch (value) {
+            case 'off':
+                await tuya.sendDataPointEnum(entity, tuya.dataPoints.evanellMode, 3 /* off */);
+                break;
+            case 'heat':
+                await tuya.sendDataPointEnum(entity, tuya.dataPoints.evanellMode, 2 /* manual */);
+                break;
+            case 'auto':
+                await tuya.sendDataPointEnum(entity, tuya.dataPoints.evanellMode, 0 /* auto */);
+                break;
+            }
+        },
+    },
+    evanell_thermostat_child_lock: {
+        key: ['child_lock'],
+        convertSet: async (entity, key, value, meta) => {
+            await tuya.sendDataPointBool(entity, tuya.dataPoints.evanellChildLock, value === 'LOCK');
         },
     },
     silvercrest_smart_led_string: {
@@ -6242,11 +6295,13 @@ const converters = {
         convertSet: async (entity, key, value, meta) => {
             switch (key) {
             case 'radar_scene':
-                await tuya.sendDataPointValue(entity, tuya.dataPoints.trsScene, value);
-                return {state: {radar_scene: value}};
+                await tuya.sendDataPointEnum(entity, tuya.dataPoints.trsScene, utils.getKey(tuya.tuyaRadar.radarScene, value));
+                break;
             case 'radar_sensitivity':
                 await tuya.sendDataPointValue(entity, tuya.dataPoints.trsSensitivity, value);
-                return {state: {radar_sensitivity: value}};
+                break;
+            default: // Unknown Key
+                meta.logger.warn(`toZigbee.tuya_radar_sensor: Unhandled Key ${key}`);
             }
         },
     },
@@ -6402,6 +6457,133 @@ const converters = {
             const lookupState = {'fast': 0x1, 'multi': 0x02};
             await entity.write('aqaraOpple', {0x0125: {value: lookupState[value], type: 0x20}}, manufacturerOptions.xiaomi);
             return {state: {click_mode: value}};
+        },
+    },
+    tuya_light_wz5: {
+        key: ['color', 'color_temp', 'brightness', 'white_brightness'],
+        convertSet: async (entity, key, value, meta) => {
+            const separateWhite = (meta.mapped.meta && meta.mapped.meta.separateWhite);
+            if (key == 'white_brightness' || (!separateWhite && (key == 'brightness'))) {
+                // upscale to 1000
+                let newValue;
+                if (value >= 0 && value <= 255) {
+                    newValue = utils.mapNumberRange(value, 0, 255, 0, 1000);
+                } else {
+                    throw new Error('Dimmer brightness is out of range 0..255');
+                }
+                await tuya.sendDataPointEnum(entity, tuya.dataPoints.silvercrestChangeMode, tuya.silvercrestModes.white);
+                await tuya.sendDataPointValue(entity, tuya.dataPoints.dimmerLevel, newValue);
+
+                return {state: {white_brightness: value}};
+            } else if (key == 'color_temp') {
+                const [colorTempMin, colorTempMax] = [250, 454];
+                const preset = {
+                    'warmest': colorTempMax,
+                    'warm': 454,
+                    'neutral': 370,
+                    'cool': 250,
+                    'coolest': colorTempMin,
+                };
+                if (typeof value === 'string' && isNaN(value)) {
+                    const presetName = value.toLowerCase();
+                    if (presetName in preset) {
+                        value = preset[presetName];
+                    } else {
+                        throw new Error(`Unknown preset '${value}'`);
+                    }
+                } else {
+                    value = light.clampColorTemp(Number(value), colorTempMin, colorTempMax, meta.logger);
+                }
+                const data = utils.mapNumberRange(value, colorTempMax, colorTempMin, 0, 1000);
+
+                await tuya.sendDataPointEnum(entity, tuya.dataPoints.silvercrestChangeMode, tuya.silvercrestModes.white);
+                await tuya.sendDataPointValue(entity, tuya.dataPoints.silvercrestSetColorTemp, data);
+
+                return {state: {color_temp: value}};
+            } else if (key == 'color' || (separateWhite && (key == 'brightness'))) {
+                const newState = {};
+                if (key == 'brightness') {
+                    newState.brightness = value;
+                } else if (key == 'color') {
+                    newState.color = value;
+                    newState.color_mode = 'hs';
+                }
+
+                const make4sizedString = (v) => {
+                    if (v.length >= 4) {
+                        return v;
+                    } else if (v.length === 3) {
+                        return '0' + v;
+                    } else if (v.length === 2) {
+                        return '00' + v;
+                    } else if (v.length === 1) {
+                        return '000' + v;
+                    } else {
+                        return '0000';
+                    }
+                };
+
+                const fillInHSB = (h, s, b, state) => {
+                    // Define default values. Device expects leading zero in string.
+                    const hsb = {
+                        h: '0168', // 360
+                        s: '03e8', // 1000
+                        b: '03e8', // 1000
+                    };
+
+                    if (h) {
+                        // The device expects 0-359
+                        if (h >= 360) {
+                            h = 359;
+                        }
+                        hsb.h = make4sizedString(h.toString(16));
+                    } else if (state.color && state.color.hue) {
+                        hsb.h = make4sizedString(state.color.hue.toString(16));
+                    }
+
+                    // Device expects 0-1000, saturation normally is 0-100 so we expect that from the user
+                    // The device expects a round number, otherwise everything breaks
+                    if (s) {
+                        hsb.s = make4sizedString(utils.mapNumberRange(s, 0, 100, 0, 1000).toString(16));
+                    } else if (state.color && state.color.saturation) {
+                        hsb.s = make4sizedString(utils.mapNumberRange(state.color.saturation, 0, 100, 0, 1000).toString(16));
+                    }
+
+                    // Scale 0-255 to 0-1000 what the device expects.
+                    if (b) {
+                        hsb.b = make4sizedString(utils.mapNumberRange(b, 0, 255, 0, 1000).toString(16));
+                    } else if (state.brightness) {
+                        hsb.b = make4sizedString(utils.mapNumberRange(state.brightness, 0, 255, 0, 1000).toString(16));
+                    }
+
+                    return hsb;
+                };
+
+                const hsb = fillInHSB(
+                    value.h || value.hue || null,
+                    value.s || value.saturation || null,
+                    value.b || value.brightness || (key == 'brightness') ? value : null,
+                    meta.state,
+                );
+
+
+                let data = [];
+                data = data.concat(tuya.convertStringToHexArray(hsb.h));
+                data = data.concat(tuya.convertStringToHexArray(hsb.s));
+                data = data.concat(tuya.convertStringToHexArray(hsb.b));
+
+                await tuya.sendDataPointEnum(entity, tuya.dataPoints.silvercrestChangeMode, tuya.silvercrestModes.color);
+                await tuya.sendDataPointStringBuffer(entity, tuya.dataPoints.silvercrestSetColor, data);
+
+                if (separateWhite && meta.state.white_brightness != undefined) {
+                    // restore white state
+                    const newValue = utils.mapNumberRange(meta.state.white_brightness, 0, 255, 0, 1000);
+                    await tuya.sendDataPointEnum(entity, tuya.dataPoints.silvercrestChangeMode, tuya.silvercrestModes.white);
+                    await tuya.sendDataPointValue(entity, tuya.dataPoints.dimmerLevel, newValue);
+                }
+
+                return {state: newState};
+            }
         },
     },
     // #endregion

@@ -90,6 +90,22 @@ module.exports = [
         ota: ota.zigbeeOTA,
     },
     {
+        zigbeeModel: ['lumi.light.acn003'],
+        model: 'ZNXDD01LM',
+        vendor: 'Xiaomi',
+        description: 'Aqara ceiling light L1-350',
+        extend: xiaomiExtend.light_onoff_brightness_colortemp({disableEffect: true, colorTempRange: [153, 370]}),
+        ota: ota.zigbeeOTA,
+    },
+    {
+        zigbeeModel: ['lumi.light.cwac02'],
+        model: 'ZNLDP13LM',
+        vendor: 'Xiaomi',
+        description: 'Aqara T1 smart LED bulb',
+        extend: xiaomiExtend.light_onoff_brightness_colortemp({disableEffect: true, colorTempRange: [153, 370]}),
+        ota: ota.zigbeeOTA,
+    },
+    {
         zigbeeModel: ['lumi.light.cwopcn01'],
         model: 'XDD11LM',
         vendor: 'Xiaomi',
@@ -670,6 +686,11 @@ module.exports = [
             exposes.enum('operation_mode', ea.ALL, ['control_relay', 'decoupled'])
                 .withDescription('Decoupled mode'),
         ],
+        configure: async (device, coordinatorEndpoint, logger) => {
+            device.type = 'Router';
+            device.powerSource = 'Mains (single phase)';
+            device.save();
+        },
     },
     {
         zigbeeModel: ['lumi.switch.b2nacn02'],
@@ -852,19 +873,17 @@ module.exports = [
         zigbeeModel: ['lumi.motion.agl02'],
         model: 'RTCGQ12LM',
         vendor: 'Xiaomi',
-        description: 'Aqara T1 human body movement and illuminance sensor (illuminance not supported for now)',
-        fromZigbee: [fz.occupancy, fz.occupancy_timeout, fz.battery],
-        toZigbee: [tz.occupancy_timeout],
-        exposes: [e.occupancy(), e.battery(),
-            exposes.numeric('occupancy_timeout', exposes.access.ALL).withValueMin(0).withValueMax(65535).withUnit('s')
-                .withDescription('Time in seconds till occupancy goes to false')],
+        description: 'Aqara T1 human body movement and illuminance sensor',
+        fromZigbee: [fz.RTCGQ12LM_occupancy_illuminance, fz.aqara_opple, fz.battery],
+        toZigbee: [tz.aqara_detection_interval],
+        exposes: [e.occupancy(), e.illuminance().withUnit('lx').withDescription('Measured illuminance in lux'),
+            exposes.numeric('detection_interval', ea.ALL).withValueMin(2).withValueMax(65535).withUnit('s')
+                .withDescription('Time interval for detecting actions'), e.battery()],
         meta: {battery: {voltageToPercentage: '3V_2100'}},
         configure: async (device, coordinatorEndpoint, logger) => {
             const endpoint = device.getEndpoint(1);
-            await reporting.bind(endpoint, coordinatorEndpoint, ['genPowerCfg', 'msOccupancySensing']);
-            await reporting.occupancy(endpoint);
-            await reporting.batteryVoltage(endpoint);
-            await endpoint.read('msOccupancySensing', ['pirOToUDelay']);
+            await endpoint.read('genPowerCfg', ['batteryVoltage']);
+            await endpoint.read('aqaraOpple', [0x0102], {manufacturerCode: 0x115f});
         },
     },
     {
@@ -872,15 +891,15 @@ module.exports = [
         model: 'RTCGQ13LM',
         vendor: 'Xiaomi',
         description: 'Aqara high precision motion sensor',
-        fromZigbee: [fz.occupancy_with_timeout, fz.aqara_opple, fz.battery],
-        toZigbee: [tz.RTCGQ13LM_detection_interval, tz.RTCGQ13LM_motion_sensitivity],
-        exposes: [e.occupancy(), e.battery(),
-            exposes.enum('motion_sensitivity', exposes.access.ALL, ['low', 'medium', 'high']),
-            exposes.numeric('detection_interval', exposes.access.ALL).withValueMin(2).withValueMax(180).withUnit('s')
-                .withDescription('Time interval for detecting actions')],
+        fromZigbee: [fz.RTCGQ13LM_occupancy, fz.aqara_opple, fz.battery],
+        toZigbee: [tz.aqara_detection_interval, tz.RTCGQ13LM_motion_sensitivity],
+        exposes: [e.occupancy(), exposes.enum('motion_sensitivity', ea.ALL, ['low', 'medium', 'high']),
+            exposes.numeric('detection_interval', ea.ALL).withValueMin(2).withValueMax(65535).withUnit('s')
+                .withDescription('Time interval for detecting actions'), e.battery()],
         meta: {battery: {voltageToPercentage: '3V_2100'}},
         configure: async (device, coordinatorEndpoint, logger) => {
             const endpoint = device.getEndpoint(1);
+            await endpoint.read('genPowerCfg', ['batteryVoltage']);
             await endpoint.read('aqaraOpple', [0x0102], {manufacturerCode: 0x115f});
             await endpoint.read('aqaraOpple', [0x010c], {manufacturerCode: 0x115f});
         },
@@ -904,6 +923,10 @@ module.exports = [
         fromZigbee: [fz.xiaomi_battery, fz.xiaomi_contact, fz.xiaomi_contact_interval],
         toZigbee: [],
         exposes: [e.battery(), e.contact(), e.temperature(), e.battery_voltage()],
+        configure: async (device) => {
+            device.powerSource = 'Battery';
+            device.save();
+        },
     },
     {
         zigbeeModel: ['lumi.sensor_wleak.aq1'],
